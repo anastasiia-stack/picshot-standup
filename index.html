@@ -90,6 +90,12 @@ input[type=date]:hover,input[type=date]:focus{border-color:var(--accent)}
 .del-chip.on .del-chip-text{color:var(--text)}
 .del-chip-desc{font-size:11px;color:var(--dim)}
 .del-chip.on .del-chip-desc{color:var(--muted)}
+.tags-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:6px}
+.tag-row{display:flex;align-items:center;gap:8px}
+.tag-name{font-size:12px;font-weight:600;color:var(--text);min-width:80px;flex-shrink:0}
+.tag-input{background:var(--surface2);border:1px solid var(--border);border-radius:5px;color:var(--text);padding:4px 10px;font-size:12px;font-family:var(--mono);width:150px;outline:none}
+.tag-input:focus{border-color:var(--accent)}
+.tag-input::placeholder{color:var(--dim)}
 .del-client-pill{display:inline-block;font-size:10px;font-weight:600;padding:1px 6px;border-radius:10px;margin-left:6px;vertical-align:middle}
 .del-note{font-size:11px;color:var(--dim);font-style:italic;margin-top:8px}
 
@@ -140,6 +146,18 @@ input[type=date]:hover,input[type=date]:focus{border-color:var(--accent)}
       <button class="btn-sm" id="toggleAll">Зняти всіх</button>
     </div>
     <div class="chips" id="chips"></div>
+  </div>
+
+  <!-- Slack tags -->
+  <div class="person-section" id="tagsSection" style="display:none">
+    <div class="section-header">
+      <span class="section-label">Slack теги команди</span>
+      <div style="display:flex;gap:8px;align-items:center">
+        <span style="font-size:11px;color:var(--dim)" id="tagsSaved"></span>
+        <button class="btn-sm" id="resetTags">Скинути</button>
+      </div>
+    </div>
+    <div class="tags-grid" id="tagsGrid"></div>
   </div>
 
   <!-- Controls -->
@@ -204,6 +222,7 @@ let colorToProject = {};   // hex -> short project name (editable)
 let allPersons = [];       // [{row, name}] from col C
 let selectedPersons = new Set();
 let deliveryItems = [];    // [{label, desc}]
+let slackTags = {};        // {name: '@slack-tag'}
 
 // Colors to skip (vacation, buffer)
 const SKIP_COLORS = new Set(['FF00FF00','FFFF0000','00000000','FFFFFFFF','FFEAEEF3']);
@@ -279,6 +298,7 @@ function parseRoadmap() {
 
   // 3. Build person chips
   buildChips();
+  buildTagsEditor();
 
   // 4. Build color map editor
   buildColorMapEditor();
@@ -362,6 +382,54 @@ document.getElementById('toggleAll').addEventListener('click', ()=>{
   updateToggle();
 });
 
+// ── SLACK TAGS EDITOR ────────────────────────────────────────────────────────
+function buildTagsEditor() {
+  const grid = document.getElementById('tagsGrid');
+  const section = document.getElementById('tagsSection');
+  if (!grid || !section) return;
+  grid.innerHTML = '';
+  section.style.display = 'block';
+
+  const saved = loadSavedTags();
+
+  for (const {name} of allPersons) {
+    const savedTag = saved && saved[name] !== undefined ? saved[name] : '';
+    slackTags[name] = savedTag;
+
+    const row = document.createElement('div');
+    row.className = 'tag-row';
+    row.innerHTML =
+      `<span class="tag-name">${name}</span>` +
+      `<input class="tag-input" data-name="${name}" value="${savedTag}" placeholder="@slack-tag">`;
+    row.querySelector('input').addEventListener('input', e => {
+      slackTags[e.target.dataset.name] = e.target.value.trim();
+      saveTags();
+    });
+    grid.appendChild(row);
+  }
+  showTagsStatus();
+}
+
+function saveTags() {
+  try {
+    localStorage.setItem('picshot_slack_tags', JSON.stringify(slackTags));
+    showTagsStatus();
+  } catch(e) {}
+}
+
+function loadSavedTags() {
+  try {
+    const raw = localStorage.getItem('picshot_slack_tags');
+    return raw ? JSON.parse(raw) : null;
+  } catch(e) { return null; }
+}
+
+function showTagsStatus() {
+  const saved = localStorage.getItem('picshot_slack_tags');
+  const el = document.getElementById('tagsSaved');
+  if (el) el.textContent = saved ? '✓ збережено' : '';
+}
+
 // ── COLOR MAP EDITOR ───────────────────────────────────────────────────────────
 function buildColorMapEditor() {
   const grid = document.getElementById('colorMapGrid');
@@ -405,6 +473,12 @@ function showColorMapStatus() {
   const el = document.getElementById('colorMapSaved');
   if (el) el.textContent = saved ? '✓ збережено' : '';
 }
+
+document.getElementById('resetTags').addEventListener('click', () => {
+  localStorage.removeItem('picshot_slack_tags');
+  slackTags = {};
+  buildTagsEditor();
+});
 
 document.getElementById('resetColorMap').addEventListener('click', () => {
   localStorage.removeItem('picshot_color_map');
@@ -488,11 +562,9 @@ function getNextSlots(ws, rowIdx, fromCol, n) {
 }
 
 function remainingLabel(task, nextSlots, todaySlot) {
-  // todaySlot: 'do' = current task is до обіду slot, 'pislya' = після обіду slot
   if (!task) return '';
   const t = task.trim();
 
-  // Find last matching index in nextSlots
   let lastIdx = -1;
   let count = 0;
   for (let i = 0; i < nextSlots.length; i++) {
@@ -501,22 +573,18 @@ function remainingLabel(task, nextSlots, todaySlot) {
     }
   }
 
-  // Determine if last occurrence is до обіду or після обіду
-  // nextSlots[0] = first slot after col_pislya = до обіду of next day
-  // nextSlots[1] = після обіду of next day, etc.
-  // parity: even index (0,2,4) = до обіду; odd index (1,3,5) = після обіду
-  const lastIsEod = (lastIdx % 2 === 1); // odd = після обіду = end of day
-
-  const finishStr = lastIsEod ? 'до кінця дня' : 'до обіду';
-
   if (count === 0) {
-    // Finishes in current slot — check which slot we're in
-    return todaySlot === 'do' ? 'закінчити до обіду' : 'закінчити до кінця дня';
+    // Finishes in current slot today
+    // If в до обіду slot → "закінчити до обіду" would duplicate the slot label → skip
+    // If в після обіду slot → useful to say "закінчити до кінця дня"
+    // But only add if there are TWO different tasks (do≠pislya); for same task all day → skip
+    return todaySlot === 'pislya' ? 'закінчити до кінця дня' : '';
   }
-  if (count === 1) return `завтра ще пів дня, закінчити ${finishStr}`;
-  if (count === 2) return `завтра ще повний день, закінчити ${finishStr}`;
+  // Has remaining slots — just say how much, no "закінчити" suffix
+  if (count === 1) return 'завтра ще пів дня';
+  if (count === 2) return 'завтра ще повний день';
   const days = Math.round(count / 2);
-  return `ще ~${days} дні, закінчити ${finishStr}`;
+  return `ще ~${days} дні`;
 }
 
 document.getElementById('genBtn').addEventListener('click', generate);
@@ -723,7 +791,8 @@ function renderMessage(persons, dateStr) {
 
   for(const p of persons) {
     if(!p.do && !p.pislya) continue;
-    let line = `@${p.name} `;
+    const tag = slackTags[p.name] ? slackTags[p.name] : `@${p.name}`;
+    let line = `${tag} `;
 
     if(p.do && p.pislya) {
       if(p.client_do===p.client_pislya) {
