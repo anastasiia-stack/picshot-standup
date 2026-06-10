@@ -202,7 +202,7 @@ input[type=date]:hover,input[type=date]:focus{border-color:var(--accent)}
           <div class="msgbar-dots"><span></span><span></span><span></span></div>
           <span class="msgbar-lbl">Slack</span>
         </div>
-        <div class="msg" id="msgOut" contenteditable="true"></div>
+        <div class="msg" id="msgOut" contenteditable="true" onpaste="handlePaste(event)"></div>
       </div>
       <div class="copy-row">
         <button class="btn" id="copyBtn">Копіювати</button>
@@ -799,7 +799,9 @@ function renderMessage(persons, dateStr) {
         if(p.do===p.pislya) {
           line += `${p.do}`;
           if(p.client_do) line += ` (${p.client_do})`;
-          if(p.timing_do) line += `, ${p.timing_do}`;
+          // Use timing_pislya for all-day same task (more informative: "закінчити до кінця дня")
+          const timingAllDay = p.timing_pislya || p.timing_do;
+          if(timingAllDay) line += `, ${timingAllDay}`;
         } else {
           line += `до обіду — ${p.do}, після обіду — ${p.pislya}`;
           if(p.client_do) line += ` (${p.client_do})`;
@@ -839,7 +841,10 @@ document.querySelectorAll('.tab').forEach(btn=>{
 
 // ── COPY ──────────────────────────────────────────────────────────────────────
 document.getElementById('copyBtn').addEventListener('click',()=>{
-  navigator.clipboard.writeText(document.getElementById('msgOut').textContent).then(()=>{
+  // Use innerText to get visible text with proper line breaks, strip any HTML
+  const el = document.getElementById('msgOut');
+  const plainText = el.innerText || el.textContent;
+  navigator.clipboard.writeText(plainText).then(()=>{
     const fb=document.getElementById('copyOk');
     fb.classList.add('show');
     setTimeout(()=>fb.classList.remove('show'),2000);
@@ -847,6 +852,13 @@ document.getElementById('copyBtn').addEventListener('click',()=>{
 });
 
 // ── HELPERS ───────────────────────────────────────────────────────────────────
+function handlePaste(e) {
+  // Always paste as plain text to avoid HTML contamination
+  e.preventDefault();
+  const text = (e.clipboardData || window.clipboardData).getData('text/plain');
+  document.execCommand('insertText', false, text);
+}
+
 function setStatus(msg,cls){ const e=document.getElementById('status');e.textContent=msg;e.className='status '+(cls||''); }
 function showErr(msg){ const e=document.getElementById('errBox');e.textContent='⚠ '+msg;e.style.display='block'; }
 function hideErr(){ document.getElementById('errBox').style.display='none'; }
