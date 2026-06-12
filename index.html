@@ -224,8 +224,12 @@ let selectedPersons = new Set();
 let deliveryItems = [];    // [{label, desc}]
 let slackTags = {};        // {name: '@slack-tag'}
 
-// Colors to skip (vacation, buffer)
+// Colors to skip (vacation, buffer) — for regular task cells
 const SKIP_COLORS = new Set(['FF00FF00','FFFF0000','00000000','FFFFFFFF','FFEAEEF3']);
+
+// For the top "Графік делівері" row, only skip actual vacation/buffer colors —
+// the cell may have NO fill (00000000) and still contain a valid delivery item
+const SKIP_COLORS_DELIVERY = new Set(['FF00FF00','FFFF0000']);
 
 // Rows to skip from person list (PM/lead rows, not artists)
 // Only truly non-assignable service rows
@@ -699,7 +703,7 @@ function generate() {
   }
 
   // Collect delivery for this week
-  deliveryItems = getDelivery(ws, dayNumCol);
+  deliveryItems = getDelivery(ws, dayNumCol, col_do, col_pislya);
 
   renderPreview(persons);
   renderMessage(persons, dateStr);
@@ -707,8 +711,43 @@ function generate() {
 }
 
 // ── DELIVERY ──────────────────────────────────────────────────────────────────
-function getDelivery(ws, dayNumCol) {
-  // Find Monday col: scan row 3 backwards for 'Mon' label
+function getDelivery(ws, dayNumCol, col_do, col_pislya) {
+  const items = [];
+
+  // ── SOURCE 1: Top "Графік делівері:" block (specific to today's columns) ────
+  // The block spans multiple rows (one pair per manager: Юля, Ангеліна, Назар)
+  // Find the start row (where col B says 'Графік делівері')
+  let topRowStart = null;
+  for(let r=5; r<=15; r++) {
+    const v = getCellVal(ws, r, 2); // col B
+    if(v && v.toLowerCase().includes('графік') && v.toLowerCase().includes('делів')) {
+      topRowStart = r; break;
+    }
+  }
+  if(topRowStart) {
+    // Scan rows from topRowStart until we hit the next project row (col B has a value again)
+    // or a reasonable max (e.g. 6 rows for 3 managers x 2 rows each)
+    for(let r=topRowStart; r<=topRowStart+8; r++) {
+      // Stop if we hit a new project section (col B non-empty AND not the start row)
+      if(r > topRowStart) {
+        const bVal = getCellVal(ws, r, 2);
+        if(bVal) break;
+      }
+      const val_do     = getCellVal(ws, r, col_do);
+      const val_pislya = getCellVal(ws, r, col_pislya);
+      const rgb_do     = getCellRgb(ws, r, col_do);
+      const rgb_pislya = getCellRgb(ws, r, col_pislya);
+
+      if(val_do && !SKIP_COLORS_DELIVERY.has(rgb_do)) {
+        items.push({label: val_do, desc: '', rgb: rgb_do});
+      }
+      if(val_pislya && !SKIP_COLORS_DELIVERY.has(rgb_pislya) && val_pislya !== val_do) {
+        items.push({label: val_pislya, desc: '', rgb: rgb_pislya});
+      }
+    }
+  }
+
+  // ── SOURCE 2: Bottom weekly delivery block ───────────────────────────────────
   let monCol = null;
   for(let c=dayNumCol-2; c>=0; c--) {
     const cell = ws[XLSX.utils.encode_cell({r:2,c})];
@@ -716,25 +755,25 @@ function getDelivery(ws, dayNumCol) {
       monCol = c+1; break; // 1-based
     }
   }
-  if(!monCol) return [];
 
-  // Find delivery header row in monCol
   let hdrRow = null;
-  for(let r=25; r<=42; r++) {
-    const v = getCellVal(ws, r, monCol);
-    if(v && v.includes('елівері')) { hdrRow=r; break; }
+  if(monCol) {
+    for(let r=25; r<=42; r++) {
+      const v = getCellVal(ws, r, monCol);
+      if(v && v.includes('елівері')) { hdrRow=r; break; }
+    }
   }
-  if(!hdrRow) return [];
+  if(hdrRow) {
+    for(let r=hdrRow+1; r<=hdrRow+20; r++) {
+      const label = getCellVal(ws, r, monCol);
+      const desc  = getCellVal(ws, r, monCol+1);
+      if(!label) continue;
+      if(/^Делівері\s*\d*$/.test(label.trim())) continue; // skip empty placeholders
+      const rgb = getCellRgb(ws, r, monCol);
+      items.push({label:label.trim(), desc:(desc||'').trim(), rgb});
+    }
+  }
 
-  const items = [];
-  for(let r=hdrRow+1; r<=hdrRow+20; r++) {
-    const label = getCellVal(ws, r, monCol);
-    const desc  = getCellVal(ws, r, monCol+1);
-    if(!label) continue;
-    if(/^Делівері\s*\d*$/.test(label.trim())) continue;
-    const rgb = getCellRgb(ws, r, monCol);
-    items.push({label:label.trim(), desc:(desc||'').trim(), rgb});
-  }
   return items;
 }
 
