@@ -561,10 +561,22 @@ function getNextSlots(ws, rowIdx, fromCol, n) {
   return result;
 }
 
+// Stopwords too generic to count as a meaningful keyword match
+const TIMING_STOPWORDS = new Set(['рендер','правки','експорт','export','експ','рендеринг','та','і','+','до','для']);
+
+function extractKeywords(text) {
+  if (!text) return [];
+  return text.toLowerCase()
+    .split(/[\s+\/,.()-]+/)
+    .map(w => w.trim())
+    .filter(w => w.length >= 3 && !TIMING_STOPWORDS.has(w));
+}
+
 function remainingLabel(task, nextSlots, todaySlot) {
   if (!task) return '';
   const t = task.trim();
 
+  // Pass 1: exact match
   let lastIdx = -1;
   let count = 0;
   for (let i = 0; i < nextSlots.length; i++) {
@@ -573,11 +585,22 @@ function remainingLabel(task, nextSlots, todaySlot) {
     }
   }
 
+  // Pass 2: if no exact match, try keyword overlap
+  // (e.g. "тако рендер" today, "тако+короны правки" tomorrow → shared keyword "тако")
+  if (count === 0) {
+    const todayKeywords = new Set(extractKeywords(t));
+    if (todayKeywords.size > 0) {
+      for (let i = 0; i < nextSlots.length; i++) {
+        if (!nextSlots[i]) continue;
+        const nextKeywords = extractKeywords(nextSlots[i]);
+        const hasOverlap = nextKeywords.some(k => todayKeywords.has(k));
+        if (hasOverlap) { lastIdx = i; count++; }
+      }
+    }
+  }
+
   if (count === 0) {
     // Finishes in current slot today
-    // If в до обіду slot → "закінчити до обіду" would duplicate the slot label → skip
-    // If в після обіду slot → useful to say "закінчити до кінця дня"
-    // But only add if there are TWO different tasks (do≠pislya); for same task all day → skip
     return todaySlot === 'pislya' ? 'закінчити до кінця дня' : '';
   }
   // Has remaining slots — just say how much, no "закінчити" suffix
