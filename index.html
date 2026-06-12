@@ -547,14 +547,34 @@ function isWeekLabelCol(ws, col1based) {
   return cell && cell.v && String(cell.v).startsWith('Week');
 }
 
+const DAY_LABELS = new Set(['Mon','Tue','Wed','Thu','Fri','Sat','Sun']);
+
 function getNextSlots(ws, rowIdx, fromCol, n) {
-  // Returns next n task cell values after fromCol, skipping Week-label cols
+  // Returns next n {value, dayName, half} after fromCol, skipping Week-label cols
+  // Structure: col X (day name label, e.g. 'Wed') = до обіду slot
+  //            col X+1 (day number, e.g. 10) = після обіду slot, belongs to same day as X
   const result = [];
   let col = fromCol + 1;
+  let currentDay = null;
+
   while (result.length < n && col <= 140) {
     if (!isWeekLabelCol(ws, col)) {
       const cell = ws[XLSX.utils.encode_cell({r: rowIdx-1, c: col-1})];
-      result.push(cell ? (cell.v != null ? String(cell.v).trim() : null) : null);
+      const val = cell ? (cell.v != null ? String(cell.v).trim() : null) : null;
+
+      // Check row3 at THIS column: if it's a day-name string, this is a "до обіду" slot
+      const row3Cell = ws[XLSX.utils.encode_cell({r:2, c: col-1})];
+      const row3Val = row3Cell ? row3Cell.v : null;
+
+      let half;
+      if (typeof row3Val === 'string' && DAY_LABELS.has(row3Val)) {
+        currentDay = row3Val;
+        half = 'do';
+      } else {
+        half = 'pislya'; // day number column = після обіду, same currentDay
+      }
+
+      result.push({ value: val, dayName: currentDay, half });
     }
     col++;
   }
@@ -572,42 +592,64 @@ function extractKeywords(text) {
     .filter(w => w.length >= 3 && !TIMING_STOPWORDS.has(w));
 }
 
+const DAY_NAMES_UK = {
+  'Mon': 'у понеділок', 'Tue': 'у вівторок', 'Wed': 'у середу',
+  'Thu': 'у четвер', 'Fri': 'у п\'ятницю', 'Sat': 'у суботу', 'Sun': 'у неділю'
+};
+
 function remainingLabel(task, nextSlots, todaySlot) {
+  // nextSlots: array of {value, dayName, half}
   if (!task) return '';
   const t = task.trim();
 
-  // Pass 1: exact match
-  let lastIdx = -1;
-  let count = 0;
+  // Find ALL matching slots (exact match first, then keyword fallback)
+  let matches = [];
   for (let i = 0; i < nextSlots.length; i++) {
-    if (nextSlots[i] && nextSlots[i].trim() === t) {
-      lastIdx = i; count++;
-    }
+    const slot = nextSlots[i];
+    if (slot.value && slot.value.trim() === t) matches.push(i);
   }
 
-  // Pass 2: if no exact match, try keyword overlap
-  // (e.g. "тако рендер" today, "тако+короны правки" tomorrow → shared keyword "тако")
-  if (count === 0) {
+  if (matches.length === 0) {
     const todayKeywords = new Set(extractKeywords(t));
     if (todayKeywords.size > 0) {
       for (let i = 0; i < nextSlots.length; i++) {
-        if (!nextSlots[i]) continue;
-        const nextKeywords = extractKeywords(nextSlots[i]);
-        const hasOverlap = nextKeywords.some(k => todayKeywords.has(k));
-        if (hasOverlap) { lastIdx = i; count++; }
+        const slot = nextSlots[i];
+        if (!slot.value) continue;
+        const nextKeywords = extractKeywords(slot.value);
+        if (nextKeywords.some(k => todayKeywords.has(k))) matches.push(i);
       }
     }
   }
 
-  if (count === 0) {
-    // Finishes in current slot today
+  if (matches.length === 0) {
     return todaySlot === 'pislya' ? 'закінчити до кінця дня' : '';
   }
-  // Has remaining slots — just say how much, no "закінчити" suffix
-  if (count === 1) return 'завтра ще пів дня';
-  if (count === 2) return 'завтра ще повний день';
-  const days = Math.round(count / 2);
-  return `ще ~${days} дні`;
+
+  const count = matches.length;
+  const firstMatchSlot = nextSlots[matches[0]];
+  const lastMatchSlot = nextSlots[matches[matches.length-1]];
+  const firstDay = firstMatchSlot.dayName;
+  const lastDay = lastMatchSlot.dayName;
+
+  const firstDayLabel = DAY_NAMES_UK[firstDay] || 'наступного дня';
+
+  if (count === 1) {
+    return firstMatchSlot.half === 'do'
+      ? `${firstDayLabel} ще пів дня`
+      : `${firstDayLabel} ще пів дня`;
+  }
+  if (count === 2 && firstDay === lastDay) {
+    return `${firstDayLabel} ще повний день`;
+  }
+
+  // Multiple days, possibly non-contiguous
+  const totalHalfDays = count;
+  const approxDays = Math.round(totalHalfDays / 2);
+  if (firstDay === lastDay) {
+    return `${firstDayLabel} ще ~${approxDays} дні`;
+  }
+  const lastDayLabel = DAY_NAMES_UK[lastDay] || '';
+  return `ще ~${approxDays} дні, до ${lastDayLabel}`;
 }
 
 document.getElementById('genBtn').addEventListener('click', generate);
